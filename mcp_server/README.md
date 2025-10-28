@@ -44,7 +44,6 @@ cd graphiti && pwd
 ```
 
 2. Install the [Graphiti prerequisites](#prerequisites).
-
 3. Configure Claude, Cursor, or other MCP client to use [Graphiti with a `stdio` transport](#integrating-with-mcp-clients). See the client documentation on where to find their MCP configuration files.
 
 ### For Cursor and other `sse`-enabled clients
@@ -91,12 +90,12 @@ The server supports both Neo4j and FalkorDB as database backends. Use the `DATAB
 - `NEO4J_PASSWORD`: Neo4j password (default: `demodemo`)
 
 #### FalkorDB Configuration
+
 - `DATABASE_TYPE`: Set to `falkordb`
 - `FALKORDB_HOST`: FalkorDB host (default: `localhost`)
 - `FALKORDB_PORT`: FalkorDB port (default: `6379`)
 - `FALKORDB_USERNAME`: FalkorDB username (optional)
 - `FALKORDB_PASSWORD`: FalkorDB password (optional)
-
 - `OPENAI_API_KEY`: OpenAI API key (required for LLM operations)
 - `OPENAI_BASE_URL`: Optional base URL for OpenAI API
 - `MODEL_NAME`: OpenAI model name to use for LLM operations.
@@ -170,8 +169,8 @@ Before running the Docker Compose setup, you need to configure the environment v
      # OPENAI_BASE_URL=https://api.openai.com/v1
      ```
    - The Docker Compose setup is configured to use this file if it exists (it's optional)
-
 2. **Using environment variables directly**:
+
    - You can also set the environment variables when running the Docker Compose command:
      ```bash
      OPENAI_API_KEY=your_key MODEL_NAME=gpt-4.1-mini docker compose up
@@ -187,22 +186,27 @@ The Docker Compose setup includes a Neo4j container with the following default c
 - Memory settings optimized for development use
 
 To run only Neo4j with its MCP server:
+
 ```bash
 docker compose up
 ```
+
 - Neo4j MCP server on port 8000
 
 #### FalkorDB Configuration
 
 The Docker Compose setup includes a FalkorDB container with the following default configuration:
+
 - Host: `falkordb`
 - Port: `6379`
 - No authentication by default
 
 To run only FalkorDB with its MCP server:
+
 ```bash
 docker compose --profile falkordb up
 ```
+
 - FalkorDB MCP server on port 8001
 
 #### Running with Docker Compose
@@ -281,14 +285,70 @@ To use the Graphiti MCP server with an MCP-compatible client, configure it to co
 }
 ```
 
-For SSE transport (HTTP-based), you can use this configuration:
+For SSE transport (HTTP-based) with VS Code, you need to use `mcp-remote` as a gateway since VS Code's MCP client only supports stdio:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "graphiti-memory": {
-      "transport": "sse",
-      "url": "http://localhost:8000/sse"
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "http://localhost:9000/sse"
+      ],
+      "type": "stdio"
+    }
+  }
+}
+```
+
+**Understanding the Connection Architecture:**
+
+```mermaid
+graph LR
+    A[VS Code MCP Client] -->|stdio| B[mcp-remote Gateway]
+    B -->|HTTP/SSE| C[Graphiti MCP Server :9000]
+    C -->|bolt://| D[Neo4j Database :7687]
+  
+    style A fill:#326ce5,stroke:#fff,stroke-width:2px,color:#fff
+    style B fill:#f39c12,stroke:#fff,stroke-width:2px,color:#fff
+    style C fill:#27ae60,stroke:#fff,stroke-width:2px,color:#fff
+    style D fill:#e74c3c,stroke:#fff,stroke-width:2px,color:#fff
+```
+
+**Why `mcp-remote` is needed:**
+
+1. **VS Code's MCP client** only speaks `stdio` protocol (standard input/output)
+2. **Graphiti MCP Server** runs with `sse` transport (Server-Sent Events over HTTP)
+3. **`mcp-remote`** acts as a protocol translator/gateway that:
+   - Accepts stdio connections from VS Code
+   - Forwards requests to the SSE endpoint
+   - Translates responses back to stdio for VS Code
+
+**Alternative: Direct stdio connection (no Docker)**
+
+If you want to avoid the gateway, run Graphiti MCP server directly with stdio:
+
+```json
+{
+  "servers": {
+    "graphiti-memory": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/graphiti/mcp_server",
+        "graphiti_mcp_server.py",
+        "--transport",
+        "stdio"
+      ],
+      "type": "stdio",
+      "env": {
+        "NEO4J_URI": "bolt://localhost:7687",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASSWORD": "password123",
+        "OPENAI_API_KEY": "your-key-here"
+      }
     }
   }
 }
@@ -355,7 +415,6 @@ docker compose up
 ```
 
 3. Add the Graphiti rules to Cursor's User Rules. See [cursor_rules.md](cursor_rules.md) for details.
-
 4. Kick off an agent session in Cursor.
 
 The integration enables AI assistants in Cursor to maintain persistent memory through Graphiti's knowledge graph
@@ -365,40 +424,37 @@ capabilities.
 
 The Graphiti MCP Server container uses the SSE MCP transport. Claude Desktop does not natively support SSE, so you'll need to use a gateway like `mcp-remote`.
 
-1.  **Run the Graphiti MCP server using SSE transport**:
+1. **Run the Graphiti MCP server using SSE transport**:
 
-    ```bash
-    docker compose up
-    ```
+   ```bash
+   docker compose up
+   ```
+2. **(Optional) Install `mcp-remote` globally**:
+   If you prefer to have `mcp-remote` installed globally, or if you encounter issues with `npx` fetching the package, you can install it globally. Otherwise, `npx` (used in the next step) will handle it for you.
 
-2.  **(Optional) Install `mcp-remote` globally**:
-    If you prefer to have `mcp-remote` installed globally, or if you encounter issues with `npx` fetching the package, you can install it globally. Otherwise, `npx` (used in the next step) will handle it for you.
+   ```bash
+   npm install -g mcp-remote
+   ```
+3. **Configure Claude Desktop**:
+   Open your Claude Desktop configuration file (usually `claude_desktop_config.json`) and add or modify the `mcpServers` section as follows:
 
-    ```bash
-    npm install -g mcp-remote
-    ```
+   ```json
+   {
+     "mcpServers": {
+       "graphiti-memory": {
+         // You can choose a different name if you prefer
+         "command": "npx", // Or the full path to mcp-remote if npx is not in your PATH
+         "args": [
+           "mcp-remote",
+           "http://localhost:8000/sse" // Ensure this matches your Graphiti server's SSE endpoint
+         ]
+       }
+     }
+   }
+   ```
 
-3.  **Configure Claude Desktop**:
-    Open your Claude Desktop configuration file (usually `claude_desktop_config.json`) and add or modify the `mcpServers` section as follows:
-
-    ```json
-    {
-      "mcpServers": {
-        "graphiti-memory": {
-          // You can choose a different name if you prefer
-          "command": "npx", // Or the full path to mcp-remote if npx is not in your PATH
-          "args": [
-            "mcp-remote",
-            "http://localhost:8000/sse" // Ensure this matches your Graphiti server's SSE endpoint
-          ]
-        }
-      }
-    }
-    ```
-
-    If you already have an `mcpServers` entry, add `graphiti-memory` (or your chosen name) as a new key within it.
-
-4.  **Restart Claude Desktop** for the changes to take effect.
+   If you already have an `mcpServers` entry, add `graphiti-memory` (or your chosen name) as a new key within it.
+4. **Restart Claude Desktop** for the changes to take effect.
 
 ## Requirements
 
