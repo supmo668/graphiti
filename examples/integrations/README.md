@@ -11,7 +11,7 @@ This directory contains examples of integrating Graphiti with popular open-sourc
 - **Use Case**: Persistent agent memory with temporal context
 
 ### Instructor Integration
-- **File**: `instructor_structured_extraction.py` (Coming Soon)
+- **File**: `instructor_structured_extraction.py`
 - **Description**: Type-safe entity and relation extraction using Instructor
 - **Tools Used**: Instructor, Pydantic
 - **Use Case**: Structured, validated knowledge extraction
