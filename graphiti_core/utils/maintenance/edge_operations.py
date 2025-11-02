@@ -97,7 +97,6 @@ async def extract_edges(
 ) -> list[EntityEdge]:
     start = time()
 
-    extract_edges_max_tokens = 16384
     llm_client = clients.llm_client
 
     edge_type_signature_map: dict[str, tuple[str, str]] = {
@@ -138,7 +137,6 @@ async def extract_edges(
         llm_response = await llm_client.generate_response(
             prompt_library.extract_edges.edge(context),
             response_model=ExtractedEdges,
-            max_tokens=extract_edges_max_tokens,
             group_id=group_id,
             prompt_name='extract_edges.edge',
         )
@@ -151,7 +149,6 @@ async def extract_edges(
             reflexion_response = await llm_client.generate_response(
                 prompt_library.extract_edges.reflexion(context),
                 response_model=MissingFacts,
-                max_tokens=extract_edges_max_tokens,
                 group_id=group_id,
                 prompt_name='extract_edges.reflexion',
             )
