@@ -6,6 +6,10 @@ When I first joined this project, I was overwhelmed trying to figure out where t
 
 We've restructured our contribution paths to solve this problem:
 
+> 💡 **New!** Check out our specialized contribution guides:
+> - **[Quick Start Guide](docs/QUICKSTART.md)** - 5-minute guide to making your first contribution
+> - **[Improvement Verticals](docs/contribute.md)** - Deep dive into RAG optimization and applied AI enhancements with research citations
+
 # Four Ways to Get Involved
 
 ### Pick Up Existing Issues
