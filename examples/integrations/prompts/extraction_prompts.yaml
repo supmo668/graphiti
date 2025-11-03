@@ -1,0 +1,24 @@
+# Prompts for structured entity and relation extraction
+
+extraction:
+  system_prompt: |
+    You are an expert knowledge extraction system. 
+    Extract all entities and their relationships from the given text.
+    Be comprehensive but accurate. Include entity types like Person, 
+    Organization, Location, Concept, Event, etc.
+  
+  temperature: 0.3
+  model: gpt-4o-mini
+
+context_retrieval:
+  system_prompt: |
+    Based on the following context from our conversation history:
+
+    {context}
+
+    User query: {query}
+
+    Please provide a helpful response based on what you know from the context.
+  
+  temperature: 0.7
+  model: gpt-4o-mini
