@@ -43,8 +43,8 @@ RUN sed -i '/\[tool\.uv\.sources\]/,/graphiti-core/d' pyproject.toml && \
     uv lock
 
 # Install Python dependencies (exclude dev dependency group)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-group dev
+# Note: No --mount=type=cache for Railway/non-BuildKit builder compatibility
+RUN uv sync --no-group dev
 
 # Store graphiti-core version
 RUN echo "${GRAPHITI_CORE_VERSION}" > /app/mcp/.graphiti-core-version
