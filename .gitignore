@@ -1,4 +1,6 @@
 ### Python template
+# claude
+.claude/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,0 +1,125 @@
+name: Railway Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      railway_service_id:
+        description: 'Railway service ID to deploy to (optional — uses project default if empty)'
+        required: false
+        type: string
+      deployment_url:
+        description: 'Deployed service URL for health check (e.g., https://your-app.up.railway.app)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate config files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate railway.toml
+        run: |
+          python -c "
+          import tomllib
+          with open('mcp_server/railway.toml', 'rb') as f:
+              config = tomllib.load(f)
+          print('railway.toml is valid TOML')
+          print(f'  Builder: {config.get(\"build\", {}).get(\"builder\", \"N/A\")}')
+          print(f'  Health check: {config.get(\"deploy\", {}).get(\"healthcheckPath\", \"N/A\")}')
+          "
+
+      - name: Validate config-docker-neo4j.yaml
+        run: |
+          pip install pyyaml
+          python -c "
+          import yaml
+          with open('mcp_server/config/config-docker-neo4j.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+          print('config-docker-neo4j.yaml is valid YAML')
+          print(f'  Database provider: {config.get(\"database\", {}).get(\"provider\", \"N/A\")}')
+          print(f'  LLM provider: {config.get(\"llm\", {}).get(\"provider\", \"N/A\")}')
+          "
+
+  deploy:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Check for Railway token
+        id: check-token
+        env:
+          HAS_TOKEN: ${{ secrets.RAILWAY_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "RAILWAY_TOKEN not configured — skipping deployment"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.check-token.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        if: steps.check-token.outputs.skip != 'true'
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        if: steps.check-token.outputs.skip != 'true'
+        working-directory: mcp_server
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.railway_service_id }}" ]; then
+            echo "Deploying to service: ${{ inputs.railway_service_id }}"
+            railway up --ci --service "${{ inputs.railway_service_id }}"
+          else
+            echo "Deploying to default project service"
+            railway up --ci
+          fi
+
+  health-check:
+    name: Post-deploy health check
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: ${{ inputs.deployment_url != '' }}
+    steps:
+      - name: Wait for deployment to stabilize
+        run: sleep 30
+
+      - name: Health check
+        run: |
+          URL="${{ inputs.deployment_url }}"
+          HEALTH_URL="${URL%/}/health"
+          echo "Checking health at: $HEALTH_URL"
+
+          MAX_ATTEMPTS=6
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$HEALTH_URL" 2>/dev/null || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health check passed (HTTP $HTTP_CODE)"
+              exit 0
+            fi
+
+            echo "Attempt $i/$MAX_ATTEMPTS: HTTP $HTTP_CODE"
+            if [ $i -lt $MAX_ATTEMPTS ]; then
+              sleep 15
+            fi
+          done
+
+          echo "Health check did not return 200 after $MAX_ATTEMPTS attempts"
+          echo "The deployment may still be starting up — check Railway dashboard."
+          exit 1
