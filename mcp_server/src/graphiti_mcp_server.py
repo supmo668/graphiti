@@ -921,15 +921,20 @@ async def run_mcp_server():
         logger.info(f'Access the server at: http://{mcp.settings.host}:{mcp.settings.port}/sse')
         await mcp.run_sse_async()
     elif mcp_config.transport == 'http':
-        # Use localhost for display if binding to 0.0.0.0
+        # Use Railway public domain if available, otherwise localhost for display
+        railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
         display_host = 'localhost' if mcp.settings.host == '0.0.0.0' else mcp.settings.host
         logger.info(
             f'Running MCP server with streamable HTTP transport on {mcp.settings.host}:{mcp.settings.port}'
         )
         logger.info('=' * 60)
         logger.info('MCP Server Access Information:')
-        logger.info(f'  Base URL: http://{display_host}:{mcp.settings.port}/')
-        logger.info(f'  MCP Endpoint: http://{display_host}:{mcp.settings.port}/mcp/')
+        if railway_domain:
+            logger.info(f'  Public URL: https://{railway_domain}/')
+            logger.info(f'  MCP Endpoint: https://{railway_domain}/mcp/')
+        else:
+            logger.info(f'  Base URL: http://{display_host}:{mcp.settings.port}/')
+            logger.info(f'  MCP Endpoint: http://{display_host}:{mcp.settings.port}/mcp/')
         logger.info('  Transport: HTTP (streamable)')
 
         # Show FalkorDB Browser UI access if enabled
