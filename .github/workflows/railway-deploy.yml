@@ -113,10 +113,12 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           ENV="${{ needs.resolve-env.outputs.environment }}"
+          # Manual input overrides env secret; env secret overrides nothing
+          SERVICE_ID="${{ inputs.railway_service_id || secrets.RAILWAY_SERVICE_ID }}"
           echo "Deploying MCP server to Railway ($ENV)"
-          if [ -n "${{ inputs.railway_service_id }}" ]; then
-            echo "Targeting service: ${{ inputs.railway_service_id }}"
-            railway up --ci --service "${{ inputs.railway_service_id }}"
+          if [ -n "$SERVICE_ID" ]; then
+            echo "Targeting service: $SERVICE_ID"
+            railway up --ci --service "$SERVICE_ID"
           else
             railway up --ci
           fi
