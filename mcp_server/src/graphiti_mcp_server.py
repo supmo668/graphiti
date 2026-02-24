@@ -923,9 +923,11 @@ async def run_mcp_server():
     # Initialize the server
     mcp_config = await initialize_server()
 
-    # Determine if auth is enabled (requires DATABASE_URL or AUTH_DATABASE_URL)
+    # Determine if auth is enabled (AUTH_KEYS env var and/or AUTH_DATABASE_URL)
     auth_enabled = bool(
-        os.environ.get('AUTH_DATABASE_URL') or os.environ.get('DATABASE_URL')
+        os.environ.get('AUTH_KEYS')
+        or os.environ.get('AUTH_DATABASE_URL')
+        or os.environ.get('DATABASE_URL')
     )
 
     if auth_enabled:
@@ -935,10 +937,10 @@ async def run_mcp_server():
             await ensure_schema()
             logger.info('Bearer token authentication ENABLED')
         except Exception as e:
-            logger.warning(f'Auth database unavailable, disabling auth: {e}')
+            logger.warning(f'Auth init failed, disabling auth: {e}')
             auth_enabled = False
     else:
-        logger.info('Bearer token authentication DISABLED (no AUTH_DATABASE_URL)')
+        logger.info('Bearer token authentication DISABLED (set AUTH_KEYS or AUTH_DATABASE_URL)')
 
     # Run the server with configured transport
     logger.info(f'Starting MCP server with transport: {mcp_config.transport}')
