@@ -983,15 +983,29 @@ async def run_mcp_server():
         # Get the ASGI app from FastMCP and optionally wrap with auth
         app = mcp.streamable_http_app()
 
-        # Disable Starlette's automatic trailing-slash 307 redirects.
-        # VSCode MCP client sends POST /mcp/ which gets 307'd to GET /mcp
-        # (losing the POST method + body), causing "Missing session ID" 400s.
+        # Disable Starlette's automatic trailing-slash 307 redirects which
+        # convert POST to GET (losing method + body). We strip trailing
+        # slashes at the ASGI level instead, preserving the HTTP method.
         app.router.redirect_slashes = False
 
         if auth_enabled:
             from auth.middleware import BearerAuthMiddleware
 
             app.add_middleware(BearerAuthMiddleware)
+
+        # Wrap the fully-configured Starlette app with an ASGI-level
+        # trailing-slash stripper so /mcp/ routes to /mcp without a redirect.
+        _inner_app = app
+
+        async def strip_trailing_slash(scope, receive, send):
+            """ASGI middleware: normalise /path/ → /path before routing."""
+            if scope['type'] == 'http':
+                path = scope.get('path', '')
+                if path != '/' and path.endswith('/'):
+                    scope = dict(scope, path=path.rstrip('/'))
+            await _inner_app(scope, receive, send)
+
+        app = strip_trailing_slash  # type: ignore[assignment]
 
         import uvicorn
 
