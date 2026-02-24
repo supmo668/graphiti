@@ -982,6 +982,12 @@ async def run_mcp_server():
 
         # Get the ASGI app from FastMCP and optionally wrap with auth
         app = mcp.streamable_http_app()
+
+        # Disable Starlette's automatic trailing-slash 307 redirects.
+        # VSCode MCP client sends POST /mcp/ which gets 307'd to GET /mcp
+        # (losing the POST method + body), causing "Missing session ID" 400s.
+        app.router.redirect_slashes = False
+
         if auth_enabled:
             from auth.middleware import BearerAuthMiddleware
 
@@ -994,6 +1000,9 @@ async def run_mcp_server():
             host=mcp.settings.host,
             port=mcp.settings.port,
             log_level=mcp.settings.log_level.lower(),
+            # Trust Railway's reverse proxy headers (X-Forwarded-Proto, etc.)
+            proxy_headers=True,
+            forwarded_allow_ips='*',
         )
         server = uvicorn.Server(uvi_config)
         await server.serve()
