@@ -929,10 +929,14 @@ async def run_mcp_server():
     )
 
     if auth_enabled:
-        from auth.db import close_pool, ensure_schema
+        try:
+            from auth.db import ensure_schema
 
-        await ensure_schema()
-        logger.info('Bearer token authentication ENABLED')
+            await ensure_schema()
+            logger.info('Bearer token authentication ENABLED')
+        except Exception as e:
+            logger.warning(f'Auth database unavailable, disabling auth: {e}')
+            auth_enabled = False
     else:
         logger.info('Bearer token authentication DISABLED (no AUTH_DATABASE_URL)')
 
