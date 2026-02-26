@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "graphiti": {
+    "graphiti-stdio": {
       "transport": "stdio",
       "command": "uv",
       "args": [
@@ -16,6 +16,21 @@
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "MODEL_NAME": "gpt-4.1-mini"
       }
+    },
+    "graphiti-http-local": {
+      "type": "streamable-http",
+      "url": "http://localhost:8000/mcp/"
+    },
+    "graphiti-http-railway-test": {
+      "type": "streamable-http",
+      "url": "https://graphiti-mcp-test.up.railway.app/mcp/",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY_HERE"
+      }
+    },
+    "graphiti-sse-local": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
     }
   }
 }
