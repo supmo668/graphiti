@@ -21,6 +21,11 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+except ImportError:
+    TransportSecuritySettings = None  # type: ignore[assignment,misc]
+
 from config.schema import GraphitiConfig, ServerConfig
 from models.response_types import (
     EpisodeSearchResponse,
@@ -33,6 +38,7 @@ from models.response_types import (
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from services.queue_service import QueueService
+from auth.context import get_auth_group_id
 from utils.formatting import format_fact_result
 
 # Load .env file from mcp_server directory
@@ -143,10 +149,19 @@ For optimal performance, ensure the database is properly configured and accessib
 API keys are provided for any language model operations.
 """
 
-# MCP server instance
+# MCP server instance — disable DNS rebinding protection because:
+#  1. We run behind Railway's reverse proxy (custom Host header)
+#  2. Auth is handled by our own BearerAuthMiddleware
+_transport_security_kwargs: dict = {}
+if TransportSecuritySettings is not None:
+    _transport_security_kwargs['transport_security'] = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    )
+
 mcp = FastMCP(
     'Graphiti Agent Memory',
     instructions=GRAPHITI_MCP_INSTRUCTIONS,
+    **_transport_security_kwargs,
 )
 
 # Global services
@@ -156,6 +171,26 @@ queue_service: QueueService | None = None
 # Global client for backward compatibility
 graphiti_client: Graphiti | None = None
 semaphore: asyncio.Semaphore
+
+
+def _effective_group_id(explicit: str | None = None) -> str:
+    """Resolve group_id: explicit param > auth context > config default."""
+    if explicit:
+        return explicit
+    auth_gid = get_auth_group_id()
+    if auth_gid:
+        return auth_gid
+    return config.graphiti.group_id
+
+
+def _effective_group_ids(explicit: list[str] | None = None) -> list[str]:
+    """Resolve group_ids list: explicit param > auth context > config default."""
+    if explicit is not None:
+        return explicit
+    auth_gid = get_auth_group_id()
+    if auth_gid:
+        return [auth_gid]
+    return [config.graphiti.group_id] if config.graphiti.group_id else []
 
 
 class GraphitiService:
@@ -410,8 +445,7 @@ async def add_memory(
         return ErrorResponse(error='Services not initialized')
 
     try:
-        # Use the provided group_id or fall back to the default from config
-        effective_group_id = group_id or config.graphiti.group_id
+        effective_group_id = _effective_group_id(group_id)
 
         # Try to parse the source as an EpisodeType enum, with fallback to text
         episode_type = EpisodeType.text  # Default
@@ -466,14 +500,7 @@ async def search_nodes(
     try:
         client = await graphiti_service.get_client()
 
-        # Use the provided group_ids or fall back to the default from config if none provided
-        effective_group_ids = (
-            group_ids
-            if group_ids is not None
-            else [config.graphiti.group_id]
-            if config.graphiti.group_id
-            else []
-        )
+        effective_group_ids = _effective_group_ids(group_ids)
 
         # Create search filters
         search_filters = SearchFilters(
@@ -550,14 +577,7 @@ async def search_memory_facts(
 
         client = await graphiti_service.get_client()
 
-        # Use the provided group_ids or fall back to the default from config if none provided
-        effective_group_ids = (
-            group_ids
-            if group_ids is not None
-            else [config.graphiti.group_id]
-            if config.graphiti.group_id
-            else []
-        )
+        effective_group_ids = _effective_group_ids(group_ids)
 
         relevant_edges = await client.search(
             group_ids=effective_group_ids,
@@ -675,14 +695,7 @@ async def get_episodes(
     try:
         client = await graphiti_service.get_client()
 
-        # Use the provided group_ids or fall back to the default from config if none provided
-        effective_group_ids = (
-            group_ids
-            if group_ids is not None
-            else [config.graphiti.group_id]
-            if config.graphiti.group_id
-            else []
-        )
+        effective_group_ids = _effective_group_ids(group_ids)
 
         # Get episodes from the driver directly
         from graphiti_core.nodes import EpisodicNode
@@ -949,6 +962,25 @@ async def run_mcp_server():
     # Initialize the server
     mcp_config = await initialize_server()
 
+    # Determine if auth is enabled (AUTH_KEYS env var and/or AUTH_DATABASE_URL)
+    auth_enabled = bool(
+        os.environ.get('AUTH_KEYS')
+        or os.environ.get('AUTH_DATABASE_URL')
+        or os.environ.get('DATABASE_URL')
+    )
+
+    if auth_enabled:
+        try:
+            from auth.db import ensure_schema
+
+            await ensure_schema()
+            logger.info('Bearer token authentication ENABLED')
+        except Exception as e:
+            logger.warning(f'Auth init failed, disabling auth: {e}')
+            auth_enabled = False
+    else:
+        logger.info('Bearer token authentication DISABLED (set AUTH_KEYS or AUTH_DATABASE_URL)')
+
     # Run the server with configured transport
     logger.info(f'Starting MCP server with transport: {mcp_config.transport}')
     if mcp_config.transport == 'stdio':
@@ -974,6 +1006,7 @@ async def run_mcp_server():
         else:
             logger.info(f'  Base URL: http://{display_host}:{mcp.settings.port}/')
             logger.info(f'  MCP Endpoint: http://{display_host}:{mcp.settings.port}/mcp/')
+        logger.info(f'  Auth: {"Bearer token" if auth_enabled else "NONE (open)"}')
         logger.info('  Transport: HTTP (streamable)')
 
         # Show FalkorDB Browser UI access if enabled
@@ -986,7 +1019,46 @@ async def run_mcp_server():
         # Configure uvicorn logging to match our format
         configure_uvicorn_logging()
 
-        await mcp.run_streamable_http_async()
+        # Get the ASGI app from FastMCP and optionally wrap with auth
+        app = mcp.streamable_http_app()
+
+        # Disable Starlette's automatic trailing-slash 307 redirects which
+        # convert POST to GET (losing method + body). We strip trailing
+        # slashes at the ASGI level instead, preserving the HTTP method.
+        app.router.redirect_slashes = False
+
+        if auth_enabled:
+            from auth.middleware import BearerAuthMiddleware
+
+            app.add_middleware(BearerAuthMiddleware)
+
+        # Wrap the fully-configured Starlette app with an ASGI-level
+        # trailing-slash stripper so /mcp/ routes to /mcp without a redirect.
+        _inner_app = app
+
+        async def strip_trailing_slash(scope, receive, send):
+            """ASGI middleware: normalise /path/ → /path before routing."""
+            if scope['type'] == 'http':
+                path = scope.get('path', '')
+                if path != '/' and path.endswith('/'):
+                    scope = dict(scope, path=path.rstrip('/'))
+            await _inner_app(scope, receive, send)
+
+        app = strip_trailing_slash  # type: ignore[assignment]
+
+        import uvicorn
+
+        uvi_config = uvicorn.Config(
+            app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+            # Trust Railway's reverse proxy headers (X-Forwarded-Proto, etc.)
+            proxy_headers=True,
+            forwarded_allow_ips='*',
+        )
+        server = uvicorn.Server(uvi_config)
+        await server.serve()
     else:
         raise ValueError(
             f'Unsupported transport: {mcp_config.transport}. Use "sse", "stdio", or "http"'

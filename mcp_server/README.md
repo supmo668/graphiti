@@ -241,6 +241,153 @@ The `config.yaml` file supports environment variable expansion using `${VAR_NAME
 
 You can set these variables in a `.env` file in the project directory.
 
+### Authentication (Bearer Token)
+
+When deploying the MCP server over HTTP (especially to a public endpoint), you should enable bearer token authentication to restrict access. The auth layer maps each API key to a `user_id` and `group_id`, providing per-tenant memory isolation.
+
+#### Quick Start — Static Keys (Recommended)
+
+Set the `AUTH_KEYS` environment variable with one or more keys in `token:user_id:group_id` format:
+
+```bash
+# Single key
+AUTH_KEYS="my-secret-token:alice:alice_memory"
+
+# Multiple keys (comma-separated)
+AUTH_KEYS="token1:alice:alice_memory,token2:bob:bob_memory"
+```
+
+That's it — no database required. The server reads `AUTH_KEYS` at startup and authenticates every request to `/mcp` (and `/mcp/`) against these keys.
+
+#### Generating a Secure Key
+
+Use the `gm_` prefix convention with a cryptographically random token:
+
+```bash
+python3 -c "import secrets; print(f'gm_{secrets.token_urlsafe(32)}')"
+# Example output: gm_Ep8KeWCEPklucsM4lPC4G22U4FAGTkaIQkr59v49HI0
+```
+
+Then add it to `AUTH_KEYS`:
+
+```bash
+AUTH_KEYS="gm_Ep8KeWCEPklucsM4lPC4G22U4FAGTkaIQkr59v49HI0:myuser:main"
+```
+
+#### Persistent Keys with Postgres (Optional)
+
+For dynamic key provisioning without redeploying, set `AUTH_DATABASE_URL` to a Postgres connection string. The server will create an `api_keys` table automatically.
+
+```bash
+AUTH_DATABASE_URL="postgresql://user:pass@host:5432/dbname"
+```
+
+Manage keys via the CLI:
+
+```bash
+# Create a key (prints the raw key once — save it)
+python -m auth.manage_keys create --user alice --group alice_memory --label "Alice dev key"
+
+# List all keys
+python -m auth.manage_keys list
+
+# Revoke a key
+python -m auth.manage_keys revoke --id 3
+```
+
+Static keys (`AUTH_KEYS`) and Postgres keys work together — static keys are checked first.
+
+#### How Auth Works
+
+| Endpoint | Auth Required |
+|----------|--------------|
+| `GET /health` | No |
+| `POST /mcp` | Yes |
+| `POST /mcp/` | Yes |
+| `GET /docs` | No |
+
+- Requests to protected endpoints must include an `Authorization: Bearer <token>` header.
+- The token's `group_id` is automatically injected into all MCP tool calls, scoping memory operations to that tenant.
+- If a tool call explicitly provides a `group_id`, it overrides the auth-derived one.
+- If no auth backend is configured (`AUTH_KEYS` not set, no Postgres), the server starts in **no-auth mode** using the default `group_id` from config.
+
+#### Connecting from VS Code / Copilot Chat
+
+Add to `.vscode/mcp.json` (or VS Code user settings):
+
+```json
+{
+  "mcpServers": {
+    "graphiti": {
+      "type": "streamable-http",
+      "url": "https://your-server.example.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer gm_YOUR_API_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+#### Connecting from Cursor
+
+Add to Cursor's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "graphiti-memory": {
+      "url": "https://your-server.example.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer gm_YOUR_API_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+#### Connecting from a Backend (Python)
+
+```python
+import httpx
+
+MCP_URL = "https://your-server.example.com/mcp/"
+API_KEY = "gm_YOUR_API_KEY_HERE"
+
+async def mcp_request(method: str, params: dict = None):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            MCP_URL,
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "method": method,
+                "id": 1,
+                "params": params or {},
+            },
+        )
+        resp.raise_for_status()
+        return resp.text
+```
+
+#### Connecting with curl (Testing)
+
+```bash
+# Health check (no auth)
+curl https://your-server.example.com/health
+
+# MCP initialize (with auth)
+curl -X POST https://your-server.example.com/mcp/ \
+  -H "Authorization: Bearer gm_YOUR_API_KEY_HERE" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
+```
+
 ## Running the Server
 
 ### Default Setup (FalkorDB Combined Container)
