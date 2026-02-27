@@ -155,6 +155,14 @@ class Node(BaseModel, ABC):
 
         logger.debug(f'Deleted Node: {self.uuid}')
 
+        if driver.vector_store is not None:
+            try:
+                await driver.vector_store.delete_nodes_by_uuids([self.uuid])
+            except Exception:
+                logger.warning(
+                    f'Failed to delete node {self.uuid} from vector store', exc_info=True
+                )
+
     def __hash__(self):
         return hash(self.uuid)
 
@@ -221,6 +229,14 @@ class Node(BaseModel, ABC):
                         """,
                         group_id=group_id,
                     )
+
+        if driver.vector_store is not None:
+            try:
+                await driver.vector_store.delete_by_group_ids([group_id])
+            except Exception:
+                logger.warning(
+                    f'Failed to delete group {group_id} from vector store', exc_info=True
+                )
 
     @classmethod
     async def delete_by_uuids(cls, driver: GraphDriver, uuids: list[str], batch_size: int = 100):
@@ -296,6 +312,12 @@ class Node(BaseModel, ABC):
                         uuids=uuids,
                         batch_size=batch_size,
                     )
+
+        if driver.vector_store is not None and uuids:
+            try:
+                await driver.vector_store.delete_nodes_by_uuids(uuids)
+            except Exception:
+                logger.warning('Failed to delete nodes from vector store', exc_info=True)
 
     @classmethod
     async def get_by_uuid(cls, driver: GraphDriver, uuid: str): ...
@@ -560,6 +582,12 @@ class EntityNode(Node):
 
         logger.debug(f'Saved Node to Graph: {self.uuid}')
 
+        if driver.vector_store is not None:
+            try:
+                await driver.vector_store.save_entity_nodes([self])
+            except Exception:
+                logger.warning(f'Failed to sync node {self.uuid} to vector store', exc_info=True)
+
         return result
 
     @classmethod
@@ -690,6 +718,15 @@ class CommunityNode(Node):
         )
 
         logger.debug(f'Saved Node to Graph: {self.uuid}')
+
+        if driver.vector_store is not None:
+            try:
+                await driver.vector_store.save_community_nodes([self])
+            except Exception:
+                logger.warning(
+                    f'Failed to sync community node {self.uuid} to vector store',
+                    exc_info=True,
+                )
 
         return result
 

@@ -254,6 +254,12 @@ async def remove_communities(driver: GraphDriver):
         """
     )
 
+    if driver.vector_store is not None:
+        try:
+            await driver.vector_store.delete_community_nodes()
+        except Exception:
+            logger.warning('Failed to remove communities from vector store', exc_info=True)
+
 
 async def determine_entity_community(
     driver: GraphDriver, entity: EntityNode
