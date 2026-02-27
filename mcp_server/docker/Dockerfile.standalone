@@ -48,7 +48,7 @@ RUN uv sync --no-group dev
 
 # Optional: install pymilvus for Milvus vector store support
 # Set INSTALL_MILVUS=true in docker-compose build args to enable
-ARG INSTALL_MILVUS=false
+ARG INSTALL_MILVUS=true
 RUN if [ "$INSTALL_MILVUS" = "true" ]; then \
         echo "Installing pymilvus for Milvus vector store support..." && \
         uv pip install "pymilvus>=2.5.3"; \
