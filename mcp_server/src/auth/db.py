@@ -40,7 +40,7 @@ def _load_static_keys() -> int:
             continue
         parts = entry.split(':')
         if len(parts) != 3:
-            logger.warning(f'Skipping malformed AUTH_KEYS entry (expected key:user:group)')
+            logger.warning('Skipping malformed AUTH_KEYS entry (expected key:user:group)')
             continue
         key, user_id, group_id = parts
         _static_keys[hash_key(key)] = {'user_id': user_id, 'group_id': group_id}
@@ -133,8 +133,6 @@ async def lookup_key(raw_key: str) -> dict | None:
 
 async def create_api_key(user_id: str, group_id: str, label: str = '') -> str:
     """Provision a new API key in Postgres. Returns the raw key (shown once)."""
-    import asyncpg  # noqa: F811
-
     raw_key = f'gm_{secrets.token_urlsafe(32)}'
     pool = await _get_pool()
     if pool is None:

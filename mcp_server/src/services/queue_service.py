@@ -2,11 +2,17 @@
 
 import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Timeout for individual episode processing (seconds).
+# LLM-heavy operations (entity extraction, deduplication) can be slow,
+# so the default is generous. Override via REQUEST_TIMEOUT env var.
+REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '300'))
 
 
 class QueueService:
@@ -62,8 +68,13 @@ class QueueService:
                 process_func = await self._episode_queues[group_id].get()
 
                 try:
-                    # Process the episode
-                    await process_func()
+                    # Process the episode with a timeout to prevent indefinite hangs
+                    await asyncio.wait_for(process_func(), timeout=REQUEST_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f'Episode processing timed out after {REQUEST_TIMEOUT}s '
+                        f'for group_id {group_id}'
+                    )
                 except Exception as e:
                     logger.error(
                         f'Error processing queued episode for group_id {group_id}: {str(e)}',

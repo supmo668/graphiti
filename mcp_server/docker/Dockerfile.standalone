@@ -10,12 +10,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user
+RUN groupadd -r graphiti && useradd -r -g graphiti -m graphiti
+
 # Install uv for Python package management
 ADD https://astral.sh/uv/install.sh /uv-installer.sh
-RUN sh /uv-installer.sh && rm /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh && \
+    mkdir -p /home/graphiti/.local/bin && \
+    cp /root/.local/bin/uv /home/graphiti/.local/bin/ && \
+    cp /root/.local/bin/uvx /home/graphiti/.local/bin/ || true
 
-# Add uv to PATH
-ENV PATH="/root/.local/bin:${PATH}"
+# Add uv to PATH (use non-root user home)
+ENV PATH="/home/graphiti/.local/bin:${PATH}"
 
 # Configure uv for optimal Docker usage
 ENV UV_COMPILE_BYTECODE=1 \
@@ -62,8 +68,9 @@ COPY main.py ./
 COPY src/ ./src/
 COPY config/ ./config/
 
-# Create log directory
-RUN mkdir -p /var/log/graphiti
+# Create log directory and set ownership for non-root user
+RUN mkdir -p /var/log/graphiti && \
+    chown -R graphiti:graphiti /app/mcp /var/log/graphiti
 
 # Add Docker labels with version information
 ARG MCP_SERVER_VERSION=1.0.1
@@ -82,8 +89,12 @@ LABEL org.opencontainers.image.title="Graphiti MCP Server (Standalone)" \
 EXPOSE 8000
 
 # Health check - verify MCP server is responding
-HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+# start-period=60s to allow for DB initialization with deep health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
+
+# Switch to non-root user
+USER graphiti
 
 # Run the MCP server
 CMD ["uv", "run", "--no-sync", "main.py"]

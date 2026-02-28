@@ -8,3 +8,4 @@ healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
 numReplicas = 1
+shutdownGracePeriodSeconds = 30

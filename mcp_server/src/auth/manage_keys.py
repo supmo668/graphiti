@@ -43,13 +43,12 @@ async def cmd_create(args):
 
 
 async def cmd_list(args):
-    from auth.db import get_pool, ensure_schema
+    from auth.db import ensure_schema, get_pool
 
     await ensure_schema()
     pool = await get_pool()
     rows = await pool.fetch(
-        'SELECT id, user_id, group_id, label, is_active, created_at '
-        'FROM api_keys ORDER BY id'
+        'SELECT id, user_id, group_id, label, is_active, created_at FROM api_keys ORDER BY id'
     )
     if not rows:
         print('No API keys found.')
@@ -64,13 +63,11 @@ async def cmd_list(args):
 
 
 async def cmd_revoke(args):
-    from auth.db import get_pool, ensure_schema
+    from auth.db import ensure_schema, get_pool
 
     await ensure_schema()
     pool = await get_pool()
-    result = await pool.execute(
-        'UPDATE api_keys SET is_active = FALSE WHERE id = $1', args.id
-    )
+    result = await pool.execute('UPDATE api_keys SET is_active = FALSE WHERE id = $1', args.id)
     print(f'Revoked key id={args.id} ({result})')
 
 

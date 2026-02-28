@@ -26,6 +26,7 @@ try:
 except ImportError:
     TransportSecuritySettings = None  # type: ignore[assignment,misc]
 
+from auth.context import get_auth_group_id
 from config.schema import GraphitiConfig, ServerConfig
 from models.response_types import (
     EpisodeSearchResponse,
@@ -38,7 +39,6 @@ from models.response_types import (
 )
 from services.factories import DatabaseDriverFactory, EmbedderFactory, LLMClientFactory
 from services.queue_service import QueueService
-from auth.context import get_auth_group_id
 from utils.formatting import format_fact_result
 
 # Load .env file from mcp_server directory
@@ -807,8 +807,21 @@ async def get_status() -> StatusResponse:
 
 @mcp.custom_route('/health', methods=['GET'])
 async def health_check(request) -> JSONResponse:
-    """Health check endpoint for Docker and load balancers."""
-    return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
+    """Health check endpoint for Docker and load balancers.
+
+    Tests actual database connectivity via driver.health_check().
+    Returns 503 if the service is not initialized or the database is unreachable.
+    """
+    if graphiti_service is None or graphiti_service.client is None:
+        return JSONResponse({'status': 'initializing', 'service': 'graphiti-mcp'}, status_code=503)
+    try:
+        await asyncio.wait_for(graphiti_service.client.driver.health_check(), timeout=5.0)
+        return JSONResponse({'status': 'healthy', 'service': 'graphiti-mcp'})
+    except Exception as e:
+        return JSONResponse(
+            {'status': 'unhealthy', 'service': 'graphiti-mcp', 'reason': str(e)},
+            status_code=503,
+        )
 
 
 async def initialize_server() -> ServerConfig:
@@ -957,6 +970,43 @@ async def initialize_server() -> ServerConfig:
     return config.server
 
 
+async def _shutdown():
+    """Clean up resources on server shutdown."""
+    logger.info('Shutting down gracefully...')
+
+    # 1. Drain queue workers — give in-flight episodes up to 10s to finish
+    if queue_service is not None:
+        active = [gid for gid, running in queue_service._queue_workers.items() if running]
+        if active:
+            logger.info(f'Waiting for queue workers to finish: {active}')
+            # Workers are asyncio tasks that respond to CancelledError;
+            # wait for each queue to drain (with timeout)
+            for gid in active:
+                try:
+                    await asyncio.wait_for(queue_service._episode_queues[gid].join(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f'Queue worker {gid} did not drain within 10s')
+
+    # 2. Close Graphiti client (DB connections)
+    if graphiti_service is not None and graphiti_service.client is not None:
+        try:
+            await graphiti_service.client.close()
+            logger.info('Graphiti client closed')
+        except Exception as e:
+            logger.warning(f'Error closing Graphiti client: {e}')
+
+    # 3. Close auth database pool
+    try:
+        from auth.db import close_pool
+
+        await close_pool()
+        logger.info('Auth database pool closed')
+    except Exception:
+        pass  # Auth may not be configured
+
+    logger.info('Shutdown complete')
+
+
 async def run_mcp_server():
     """Run the MCP server in the current event loop."""
     # Initialize the server
@@ -983,86 +1033,90 @@ async def run_mcp_server():
 
     # Run the server with configured transport
     logger.info(f'Starting MCP server with transport: {mcp_config.transport}')
-    if mcp_config.transport == 'stdio':
-        await mcp.run_stdio_async()
-    elif mcp_config.transport == 'sse':
-        logger.info(
-            f'Running MCP server with SSE transport on {mcp.settings.host}:{mcp.settings.port}'
-        )
-        logger.info(f'Access the server at: http://{mcp.settings.host}:{mcp.settings.port}/sse')
-        await mcp.run_sse_async()
-    elif mcp_config.transport == 'http':
-        # Use Railway public domain if available, otherwise localhost for display
-        railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
-        display_host = 'localhost' if mcp.settings.host == '0.0.0.0' else mcp.settings.host
-        logger.info(
-            f'Running MCP server with streamable HTTP transport on {mcp.settings.host}:{mcp.settings.port}'
-        )
-        logger.info('=' * 60)
-        logger.info('MCP Server Access Information:')
-        if railway_domain:
-            logger.info(f'  Public URL: https://{railway_domain}/')
-            logger.info(f'  MCP Endpoint: https://{railway_domain}/mcp/')
+    try:
+        if mcp_config.transport == 'stdio':
+            await mcp.run_stdio_async()
+        elif mcp_config.transport == 'sse':
+            logger.info(
+                f'Running MCP server with SSE transport on {mcp.settings.host}:{mcp.settings.port}'
+            )
+            logger.info(f'Access the server at: http://{mcp.settings.host}:{mcp.settings.port}/sse')
+            await mcp.run_sse_async()
+        elif mcp_config.transport == 'http':
+            # Use Railway public domain if available, otherwise localhost for display
+            railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
+            display_host = 'localhost' if mcp.settings.host == '0.0.0.0' else mcp.settings.host
+            logger.info(
+                f'Running MCP server with streamable HTTP transport on {mcp.settings.host}:{mcp.settings.port}'
+            )
+            logger.info('=' * 60)
+            logger.info('MCP Server Access Information:')
+            if railway_domain:
+                logger.info(f'  Public URL: https://{railway_domain}/')
+                logger.info(f'  MCP Endpoint: https://{railway_domain}/mcp/')
+            else:
+                logger.info(f'  Base URL: http://{display_host}:{mcp.settings.port}/')
+                logger.info(f'  MCP Endpoint: http://{display_host}:{mcp.settings.port}/mcp/')
+            logger.info(f'  Auth: {"Bearer token" if auth_enabled else "NONE (open)"}')
+            logger.info('  Transport: HTTP (streamable)')
+
+            # Show FalkorDB Browser UI access if enabled
+            if os.environ.get('BROWSER', '1') == '1':
+                logger.info(f'  FalkorDB Browser UI: http://{display_host}:3000/')
+
+            logger.info('=' * 60)
+            logger.info('For MCP clients, connect to the /mcp/ endpoint above')
+
+            # Configure uvicorn logging to match our format
+            configure_uvicorn_logging()
+
+            # Get the ASGI app from FastMCP and optionally wrap with auth
+            app = mcp.streamable_http_app()
+
+            # Disable Starlette's automatic trailing-slash 307 redirects which
+            # convert POST to GET (losing method + body). We strip trailing
+            # slashes at the ASGI level instead, preserving the HTTP method.
+            app.router.redirect_slashes = False
+
+            if auth_enabled:
+                from auth.middleware import BearerAuthMiddleware
+
+                app.add_middleware(BearerAuthMiddleware)
+
+            # Wrap the fully-configured Starlette app with an ASGI-level
+            # trailing-slash stripper so /mcp/ routes to /mcp without a redirect.
+            _inner_app = app
+
+            async def strip_trailing_slash(scope, receive, send):
+                """ASGI middleware: normalise /path/ → /path before routing."""
+                if scope['type'] == 'http':
+                    path = scope.get('path', '')
+                    if path != '/' and path.endswith('/'):
+                        scope = dict(scope, path=path.rstrip('/'))
+                await _inner_app(scope, receive, send)
+
+            app = strip_trailing_slash  # type: ignore[assignment]
+
+            import uvicorn
+
+            uvi_config = uvicorn.Config(
+                app,
+                host=mcp.settings.host,
+                port=mcp.settings.port,
+                log_level=mcp.settings.log_level.lower(),
+                # Trust Railway's reverse proxy headers (X-Forwarded-Proto, etc.)
+                proxy_headers=True,
+                forwarded_allow_ips='*',
+                timeout_keep_alive=30,
+            )
+            server = uvicorn.Server(uvi_config)
+            await server.serve()
         else:
-            logger.info(f'  Base URL: http://{display_host}:{mcp.settings.port}/')
-            logger.info(f'  MCP Endpoint: http://{display_host}:{mcp.settings.port}/mcp/')
-        logger.info(f'  Auth: {"Bearer token" if auth_enabled else "NONE (open)"}')
-        logger.info('  Transport: HTTP (streamable)')
-
-        # Show FalkorDB Browser UI access if enabled
-        if os.environ.get('BROWSER', '1') == '1':
-            logger.info(f'  FalkorDB Browser UI: http://{display_host}:3000/')
-
-        logger.info('=' * 60)
-        logger.info('For MCP clients, connect to the /mcp/ endpoint above')
-
-        # Configure uvicorn logging to match our format
-        configure_uvicorn_logging()
-
-        # Get the ASGI app from FastMCP and optionally wrap with auth
-        app = mcp.streamable_http_app()
-
-        # Disable Starlette's automatic trailing-slash 307 redirects which
-        # convert POST to GET (losing method + body). We strip trailing
-        # slashes at the ASGI level instead, preserving the HTTP method.
-        app.router.redirect_slashes = False
-
-        if auth_enabled:
-            from auth.middleware import BearerAuthMiddleware
-
-            app.add_middleware(BearerAuthMiddleware)
-
-        # Wrap the fully-configured Starlette app with an ASGI-level
-        # trailing-slash stripper so /mcp/ routes to /mcp without a redirect.
-        _inner_app = app
-
-        async def strip_trailing_slash(scope, receive, send):
-            """ASGI middleware: normalise /path/ → /path before routing."""
-            if scope['type'] == 'http':
-                path = scope.get('path', '')
-                if path != '/' and path.endswith('/'):
-                    scope = dict(scope, path=path.rstrip('/'))
-            await _inner_app(scope, receive, send)
-
-        app = strip_trailing_slash  # type: ignore[assignment]
-
-        import uvicorn
-
-        uvi_config = uvicorn.Config(
-            app,
-            host=mcp.settings.host,
-            port=mcp.settings.port,
-            log_level=mcp.settings.log_level.lower(),
-            # Trust Railway's reverse proxy headers (X-Forwarded-Proto, etc.)
-            proxy_headers=True,
-            forwarded_allow_ips='*',
-        )
-        server = uvicorn.Server(uvi_config)
-        await server.serve()
-    else:
-        raise ValueError(
-            f'Unsupported transport: {mcp_config.transport}. Use "sse", "stdio", or "http"'
-        )
+            raise ValueError(
+                f'Unsupported transport: {mcp_config.transport}. Use "sse", "stdio", or "http"'
+            )
+    finally:
+        await _shutdown()
 
 
 def main():
